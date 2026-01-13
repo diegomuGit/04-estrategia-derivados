@@ -14,6 +14,15 @@ Error estimado: < 2% vs precios de mercado
 
 import numpy as np
 from scipy.stats import norm
+import pandas as pd
+
+# Intento de importar QuantLib
+try:
+    import QuantLib as ql
+    HAS_QL = True
+except ImportError:
+    HAS_QL = False
+    print("QuantLib no disponible. Se usará BSM como fallback.")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -246,6 +255,231 @@ def calculate_all_greeks(S, K, T, r, q, sigma, option_type='call'):
         'rho': calculate_rho(S, K, T, r, q, sigma, option_type)
     }
 
+# ═══════════════════════════════════════════════════════════════════════
+# QUANTLIB - AMERICAN OPTIONS
+# ═══════════════════════════════════════════════════════════════════════
+
+def days_to_expiry_string(entry_date, tenor_days):
+    """
+    Convierte entry_date + tenor_days a formato YYYYMMDD para QuantLib.
+    
+    Parameters
+    ----------
+    entry_date : str or pd.Timestamp
+        Fecha de entrada (formato 'YYYY-MM-DD' o Timestamp)
+    tenor_days : int
+        Días hasta vencimiento
+    
+    Returns
+    -------
+    str
+        Fecha de expiración en formato 'YYYYMMDD'
+    
+    Examples
+    --------
+    >>> days_to_expiry_string('2024-01-15', 30)
+    '20240214'
+    """
+    expiry = pd.to_datetime(entry_date) + pd.Timedelta(days=tenor_days)
+    return expiry.strftime('%Y%m%d')
+
+
+def ql_greeks_american(price, S, K, expiry_str, r, q, right):
+    """
+    Calcula IV y griegas para opciones americanas usando QuantLib.
+    
+    Usa aproximación de Barone-Adesi-Whaley para calcular IV implícita,
+    luego calcula griegas con Bjerksund-Stensland.
+    
+    Parameters
+    ----------
+    price : float
+        Precio de mercado de la opción
+    S : float
+        Precio spot del subyacente
+    K : float
+        Strike de la opción
+    expiry_str : str
+        Fecha de expiración en formato 'YYYYMMDD'
+    r : float
+        Tasa libre de riesgo (anualizada, en decimal)
+    q : float
+        Dividend yield (anualizado, en decimal)
+    right : str
+        'C' para Call, 'P' para Put
+    
+    Returns
+    -------
+    dict
+        Diccionario con keys: 'iv', 'delta', 'gamma', 'vega', 'theta', 'rho'
+        Si falla el cálculo, retorna NaN en todos los valores
+    
+    Notes
+    -----
+    - Requiere QuantLib instalado (pip install QuantLib)
+    - Vega retornado por cambio de 1% en volatilidad (no por 1 punto)
+    - Theta retornado por día (no por año)
+    - Rho retornado por cambio de 1% en tasa (no por 1 punto base)
+    
+    Examples
+    --------
+    >>> greeks = ql_greeks_american(10.5, 450, 450, '20240215', 0.05, 0.015, 'C')
+    >>> print(f"Delta: {greeks['delta']:.4f}")
+    """
+    res = {
+        "iv": float("nan"), 
+        "delta": float("nan"), 
+        "gamma": float("nan"),
+        "vega": float("nan"), 
+        "theta": float("nan"), 
+        "rho": float("nan")
+    }
+
+    if not HAS_QL or price <= 0: 
+        return res
+
+    try:
+        today = ql.Date.todaysDate()
+        ql.Settings.instance().evaluationDate = today
+        exp_date = ql.DateParser.parseFormatted(expiry_str, "%Y%m%d")
+
+        opt_type = ql.Option.Call if right == "C" else ql.Option.Put
+        payoff = ql.PlainVanillaPayoff(opt_type, K)
+        exercise = ql.AmericanExercise(today, exp_date)
+
+        spot_handle = ql.QuoteHandle(ql.SimpleQuote(S))
+        day_count = ql.Actual365Fixed()
+        r_ts = ql.YieldTermStructureHandle(
+            ql.FlatForward(today, r, day_count)
+        )
+        q_ts = ql.YieldTermStructureHandle(
+            ql.FlatForward(today, q, day_count)
+        )
+
+        # --- FASE 1: IV con Barone-Adesi-Whaley ---
+        option_calc = ql.VanillaOption(payoff, exercise)
+        vol_dummy = ql.BlackVolTermStructureHandle(
+            ql.BlackConstantVol(
+                today, 
+                ql.UnitedStates(ql.UnitedStates.NYSE), 
+                0.20, 
+                day_count
+            )
+        )
+        process_calc = ql.BlackScholesMertonProcess(
+            spot_handle, q_ts, r_ts, vol_dummy
+        )
+        option_calc.setPricingEngine(
+            ql.BaroneAdesiWhaleyApproximationEngine(process_calc)
+        )
+
+        try:
+            iv = option_calc.impliedVolatility(
+                price, process_calc, 1e-4, 100, 1e-4, 4.0
+            )
+        except RuntimeError:
+            return res
+
+        res["iv"] = iv
+
+        # --- FASE 2: Griegas con Bjerksund-Stensland ---
+        option_greeks = ql.VanillaOption(payoff, exercise)
+        vol_final = ql.BlackVolTermStructureHandle(
+            ql.BlackConstantVol(
+                today, 
+                ql.UnitedStates(ql.UnitedStates.NYSE), 
+                iv, 
+                day_count
+            )
+        )
+        process_final = ql.BlackScholesMertonProcess(
+            spot_handle, q_ts, r_ts, vol_final
+        )
+
+        option_greeks.setPricingEngine(
+            ql.BjerksundStenslandApproximationEngine(process_final)
+        )
+
+        res["delta"] = option_greeks.delta()
+        res["gamma"] = option_greeks.gamma()
+        res["vega"]  = option_greeks.vega() / 100.0  # Por 1% cambio en vol
+        res["theta"] = option_greeks.theta() / 365.0  # Por día
+        res["rho"]   = option_greeks.rho() / 100.0    # Por 1% cambio en r
+
+    except Exception as e:
+        print(f"Error interno QuantLib: {e}")
+        pass
+
+    return res
+
+
+def calculate_option_greeks_american(S, K, T, r, q, sigma, option_type='call', 
+                                     market_price=None):
+    """
+    Calcula griegas de una opción individual usando QuantLib (americanas).
+    
+    ÚTIL PARA PUNTO 5: Cuando necesites calcular griegas de opciones 
+    individuales para hedging con otras opciones en lugar de con acciones.
+    
+    Parameters
+    ----------
+    S : float
+        Precio spot del subyacente
+    K : float
+        Strike de la opción
+    T : float
+        Tiempo hasta vencimiento en años
+    r : float
+        Tasa libre de riesgo (anualizada, en decimal)
+    q : float
+        Dividend yield (anualizado, en decimal)
+    sigma : float
+        Volatilidad implícita (anualizada, en decimal)
+    option_type : str, optional
+        'call' o 'put'. Default: 'call'
+    market_price : float, optional
+        Precio de mercado. Si no se proporciona, se usa precio teórico BSM
+    
+    Returns
+    -------
+    dict
+        Diccionario con griegas de la opción individual
+    
+    Examples
+    --------
+    >>> # Para el Punto 5: calcular griegas de una call OTM para hedging
+    >>> greeks_hedge = calculate_option_greeks_american(
+    ...     450, 455, 0.0822, 0.05, 0.015, 0.20, 'call'
+    ... )
+    >>> print(f"Delta de opción hedge: {greeks_hedge['delta']:.4f}")
+    >>> print(f"Gamma de opción hedge: {greeks_hedge['gamma']:.6f}")
+    """
+    
+    if not HAS_QL:
+        # Fallback a BSM usando calculate_all_greeks
+        greeks = calculate_all_greeks(S, K, T, r, q, sigma, option_type)
+        greeks['method'] = 'bsm_fallback'
+        return greeks
+    
+    # Convertir T a fecha de expiración
+    tenor_days = int(T * 365)
+    today_str = pd.Timestamp.today().strftime('%Y-%m-%d')
+    expiry_str = days_to_expiry_string(today_str, tenor_days)
+    
+    # Si no hay precio de mercado, usar BSM como aproximación
+    if market_price is None:
+        market_price = black_scholes_merton(S, K, T, r, q, sigma, option_type)
+    
+    right = 'C' if option_type == 'call' else 'P'
+    greeks = ql_greeks_american(market_price, S, K, expiry_str, r, q, right)
+    greeks['method'] = 'american_ql'
+    
+    # Si falló, fallback a BSM
+    if np.isnan(greeks['delta']):
+        greeks = calculate_all_greeks(S, K, T, r, q, sigma, option_type)
+        greeks['method'] = 'bsm_fallback'
+    
+    return greeks
 
 # ═══════════════════════════════════════════════════════════════════════
 # UTILIDADES
