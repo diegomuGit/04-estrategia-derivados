@@ -1,112 +1,79 @@
 """
-Script de prueba para verificar la lógica de hedge según delta del straddle.
+Tests para la logica de seleccion de hedge segun el signo de la delta.
+=====================================================================
+Verifica que OptionsHedgeAnalyzer.calculate_hedge_contracts neutraliza
+correctamente la delta del straddle (el signo del resultado indica
+automaticamente si comprar (+) o vender (-)).
 
-Este script prueba 3 casos:
-1. Delta positiva (+0.15) - Debe sugerir: Venta Calls + Compra Puts
-2. Delta negativa (-0.15) - Debe sugerir: Compra Calls + Venta Puts
-3. Delta cercana a cero (+0.02) - Debe calcular contratos pequeños
+Estos tests no requieren conexion a IBKR: el constructor de
+OptionsHedgeAnalyzer no usa `ib` mientras df_option_chain sea None,
+y calculate_hedge_contracts es una funcion pura.
+
+Ejecutar (desde src/scripts):
+    pytest tests/test_hedge_logic.py -v
 """
 
-import sys
-sys.path.insert(0, 'c:\\Users\\diego\\MIAX\\04-estrategia-derivados\\src\\scripts')
+import pytest
 
-from options_hedge import StraddleForHedge
+from options_hedge import OptionsHedgeAnalyzer
 
-# Caso 1: Delta positiva
-print("=" * 80)
-print("CASO 1: Delta POSITIVA (+0.15)")
-print("=" * 80)
 
-straddle_pos = StraddleForHedge(
-    spot=694.07,
-    strike=694.0,
-    expiry="20260114",
-    T=0.0082,
-    r=0.037,
-    q=0.0247,
-    sigma=0.1092,
-    delta=+0.15,  # Delta POSITIVA
-    gamma=0.1161,
-    vega=0.5018,
-    theta=-0.9129,
-    rho=0.0007
-)
+@pytest.fixture
+def analyzer():
+    """Analizador sin conexion IBKR (suficiente para la logica pura)."""
+    return OptionsHedgeAnalyzer(ib=None)
 
-print(f"\nStraddle con delta POSITIVA: {straddle_pos.delta:+.4f}")
-print("\nEstrategias esperadas:")
-print("  ✓ Venta Call ATM")
-print("  ✓ Venta Call OTM")
-print("  ✓ Compra Put ATM")
-print("  ✓ Compra Put OTM")
-print("\nRazón: Delta positiva necesita delta negativa para neutralizar")
-print("       - Vender calls (delta+ → venta = delta-)")
-print("       - Comprar puts (delta- → compra = más delta-)")
 
-# Caso 2: Delta negativa
-print("\n\n" + "=" * 80)
-print("CASO 2: Delta NEGATIVA (-0.15)")
-print("=" * 80)
+# Deltas tipicas de opciones individuales (por contrato)
+CALL_DELTA = 0.50    # call ATM ~ +0.5
+PUT_DELTA = -0.50    # put ATM ~ -0.5
 
-straddle_neg = StraddleForHedge(
-    spot=694.07,
-    strike=694.0,
-    expiry="20260114",
-    T=0.0082,
-    r=0.037,
-    q=0.0247,
-    sigma=0.1092,
-    delta=-0.15,  # Delta NEGATIVA
-    gamma=0.1161,
-    vega=0.5018,
-    theta=-0.9129,
-    rho=0.0007
-)
 
-print(f"\nStraddle con delta NEGATIVA: {straddle_neg.delta:+.4f}")
-print("\nEstrategias esperadas:")
-print("  ✓ Compra Call ATM")
-print("  ✓ Compra Call OTM")
-print("  ✓ Venta Put ATM")
-print("  ✓ Venta Put OTM")
-print("\nRazón: Delta negativa necesita delta positiva para neutralizar")
-print("       - Comprar calls (delta+ → compra = delta+)")
-print("       - Vender puts (delta- → venta = delta+)")
+class TestHedgeContractSign:
+    """El signo de los contratos debe neutralizar la delta del straddle."""
 
-# Caso 3: Delta cercana a cero
-print("\n\n" + "=" * 80)
-print("CASO 3: Delta cercana a CERO (+0.02)")
-print("=" * 80)
+    def test_positive_delta_sell_call(self, analyzer):
+        """Delta straddle +: vender calls (delta+) => contratos negativos."""
+        contracts = analyzer.calculate_hedge_contracts(0.15, CALL_DELTA)
+        assert contracts < 0
 
-straddle_atm = StraddleForHedge(
-    spot=694.07,
-    strike=694.0,
-    expiry="20260114",
-    T=0.0082,
-    r=0.037,
-    q=0.0247,
-    sigma=0.1092,
-    delta=+0.02,  # Delta cercana a CERO
-    gamma=0.1161,
-    vega=0.5018,
-    theta=-0.9129,
-    rho=0.0007
-)
+    def test_positive_delta_buy_put(self, analyzer):
+        """Delta straddle +: comprar puts (delta-) => contratos positivos."""
+        contracts = analyzer.calculate_hedge_contracts(0.15, PUT_DELTA)
+        assert contracts > 0
 
-print(f"\nStraddle ATM con delta pequeña: {straddle_atm.delta:+.4f}")
-print("\nEstrategias esperadas:")
-print("  ✓ Venta Call ATM (contratos pequeños)")
-print("  ✓ Venta Call OTM (contratos pequeños)")
-print("  ✓ Compra Put ATM (contratos pequeños)")
-print("  ✓ Compra Put OTM (contratos pequeños)")
-print("\nRazón: Delta pequeña → necesita pocos contratos para neutralizar")
+    def test_negative_delta_buy_call(self, analyzer):
+        """Delta straddle -: comprar calls (delta+) => contratos positivos."""
+        contracts = analyzer.calculate_hedge_contracts(-0.15, CALL_DELTA)
+        assert contracts > 0
 
-print("\n\n" + "=" * 80)
-print("VERIFICACIÓN COMPLETADA")
-print("=" * 80)
-print("\nPara ejecutar el análisis completo con IBKR, usar:")
-print("  analyzer = OptionsHedgeAnalyzer(ib)")
-print("  results = analyzer.run_full_analysis(straddle)")
-print("\nEl código ahora:")
-print("  1. Detecta automáticamente el signo de la delta")
-print("  2. Selecciona solo las 4 estrategias apropiadas")
-print("  3. Calcula automáticamente si comprar o vender según neutralización")
+    def test_negative_delta_sell_put(self, analyzer):
+        """Delta straddle -: vender puts (delta-) => contratos negativos."""
+        contracts = analyzer.calculate_hedge_contracts(-0.15, PUT_DELTA)
+        assert contracts < 0
+
+
+class TestHedgeContractMagnitude:
+    """El numero de contratos debe neutralizar la delta exactamente."""
+
+    def test_neutralizes_delta(self, analyzer):
+        """straddle_delta + contracts*hedge_delta == 0 (impacto neto nulo)."""
+        straddle_delta = 0.15
+        contracts = analyzer.calculate_hedge_contracts(straddle_delta, CALL_DELTA)
+        # Impacto del hedge en la delta de la cartera (sin multiplicador neto)
+        net_delta = straddle_delta + contracts * CALL_DELTA
+        assert net_delta == pytest.approx(0.0, abs=1e-9)
+
+    def test_small_delta_small_contracts(self, analyzer):
+        """Delta cercana a cero => pocos contratos."""
+        contracts = analyzer.calculate_hedge_contracts(0.02, CALL_DELTA)
+        assert abs(contracts) < 0.1
+
+    def test_zero_hedge_delta_returns_zero(self, analyzer):
+        """Si la opcion de hedge no tiene delta, no se puede neutralizar."""
+        contracts = analyzer.calculate_hedge_contracts(0.15, 0.0)
+        assert contracts == 0.0
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
