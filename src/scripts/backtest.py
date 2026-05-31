@@ -136,7 +136,12 @@ def run_backtest(
     
     # Variables para tracking
     spot_yesterday = None
-    
+
+    # Tracking de P&L del straddle como cambio diario via snapshot
+    # (consistente con el P&L del hedge, que tambien es cambio diario)
+    cumulative_realized = 0.0
+    prev_total_value = 0.0
+
     # Loop principal
     for date in trading_days:
         
@@ -277,13 +282,20 @@ def run_backtest(
             if hedge_config.include_costs:
                 daily_pnl_hedge[date] -= trade.trade_cost
         
-        # --- Paso 8: Calcular P&L del straddle ---
-        mtm_total = sum(p.mtm_pnl for p in open_positions)
-        realized_today = sum(p.realized_pnl for p in positions_to_close)
-        # Incluir P&L de salidas anticipadas
-        realized_today += sum(p.realized_pnl for p, _ in positions_to_exit)
-        daily_pnl_straddle[date] = mtm_total + realized_today
-        
+        # --- Paso 8: Calcular P&L del straddle (cambio diario via snapshot) ---
+        # Acumular el P&L realizado de las posiciones cerradas hoy
+        cumulative_realized += sum(p.realized_pnl for p in positions_to_close)
+        cumulative_realized += sum(p.realized_pnl for p, _ in positions_to_exit)
+
+        # Valor total de la cartera al cierre del dia (realizado + no realizado)
+        unrealized = sum(p.mtm_pnl for p in open_positions)
+        total_value_today = cumulative_realized + unrealized
+
+        # El P&L "diario" es el cambio del valor total respecto a ayer.
+        # Asi, cumsum() reconstruye correctamente la curva acumulada sin doble conteo.
+        daily_pnl_straddle[date] = total_value_today - prev_total_value
+        prev_total_value = total_value_today
+
         # Guardar spot para calcular P&L del hedge manana
         spot_yesterday = S
     

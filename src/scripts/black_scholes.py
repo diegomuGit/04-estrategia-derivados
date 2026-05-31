@@ -512,11 +512,8 @@ def implied_volatility_newton(option_price, S, K, T, r, q, option_type='call',
     sigma = initial_sigma
     
     for i in range(max_iterations):
-        if option_type == 'call':
-            price = black_scholes_merton_call(S, K, T, r, q, sigma)
-        else:
-            price = black_scholes_merton_put(S, K, T, r, q, sigma)
-        
+        price = black_scholes_merton(S, K, T, r, q, sigma, option_type)
+
         vega = calculate_vega(S, K, T, r, q, sigma) * 100  # Vega por 100% cambio
         
         diff = price - option_price

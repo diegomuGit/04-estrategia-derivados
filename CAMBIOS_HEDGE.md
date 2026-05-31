@@ -237,7 +237,7 @@ results = analyzer.run_full_analysis(straddle, verbose=True)
 
 ## Próximos Pasos (Opcional)
 
-- [ ] Ejecutar en notebook [punto_5.ipynb](src/notebooks/punto_5.ipynb) para verificar con datos reales
+- [ ] Ejecutar en notebook [option_hedging.ipynb](src/notebooks/option_hedging.ipynb) para verificar con datos reales
 - [ ] Probar con diferentes valores de delta para validar ambos casos
 - [ ] Actualizar documentación en el notebook si es necesario
 

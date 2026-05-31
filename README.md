@@ -32,9 +32,10 @@ Este proyecto implementa un sistema completo de backtesting y análisis para est
 │       ├── volatility_forecast.py     # Modelos GARCH para forecast de RV
 │       ├── data_loader.py             # Carga de datos de mercado (yfinance, FRED)
 │       ├── rates.py                   # Interpolación de curva de tasas
-│       ├── dividends.py               # Cálculo de dividend yield implícito
-│       ├── test_hedge_logic.py        # Tests de lógica de hedge
-│       └── test_volatility_forecast.py # Tests de modelos GARCH
+│       └── tests/                     # Tests (pytest)
+│           ├── test_hedge_logic.py        # Lógica de selección/neutralización de hedge
+│           ├── test_backtest_pnl.py       # Regresión de la contabilidad de P&L
+│           └── test_volatility_forecast.py # Modelos GARCH
 └── CAMBIOS_HEDGE.md         # Documentación de cambios en sistema de hedge
 ```
 
